@@ -73,6 +73,107 @@ class TestGeminiChatRequest:
         assert "reasoning_effort" not in kwargs
 
 
+class TestGeminiToolCallFinishReason:
+    """Gemini ends tool-call rounds with finish_reason="stop", not "tool_calls"."""
+
+    async def _run(self, provider: str) -> tuple[AsyncMock, list[str]]:
+        from backend.llm.openrouter import stream_chat
+
+        def tool_call(**kw: Any) -> SimpleNamespace:
+            # Mirrors Gemini's stream: index=None and a thought signature.
+            return SimpleNamespace(
+                index=None,
+                id=kw.get("id"),
+                type="function" if kw.get("id") else None,
+                function=SimpleNamespace(name=kw.get("name"), arguments=kw.get("arguments")),
+                extra_content=kw.get("extra_content"),
+            )
+
+        def chunk(**kw: Any) -> SimpleNamespace:
+            delta = SimpleNamespace(content=kw.get("content"), tool_calls=kw.get("tool_calls"))
+            choice = SimpleNamespace(delta=delta, finish_reason=kw.get("finish_reason"))
+            return SimpleNamespace(choices=[choice])
+
+        class _Stream:
+            def __init__(self, chunks: list[SimpleNamespace]) -> None:
+                self._chunks = chunks
+
+            def __aiter__(self):
+                return self._gen()
+
+            async def _gen(self):
+                for c in self._chunks:
+                    yield c
+
+        round1 = _Stream(
+            [
+                chunk(
+                    tool_calls=[
+                        tool_call(
+                            id="c1",
+                            name="search_videos",
+                            arguments='{"query":"x"}',
+                            extra_content={"google": {"thought_signature": "sig-1"}},
+                        ),
+                        tool_call(
+                            id="c2",
+                            name="get_video_transcript",
+                            arguments='{"video_id":"v"}',
+                            extra_content={"google": {"thought_signature": "sig-2"}},
+                        ),
+                    ]
+                ),
+                chunk(finish_reason="stop"),
+            ]
+        )
+        round2 = _Stream([chunk(content="answer"), chunk(finish_reason="stop")])
+        create = AsyncMock(side_effect=[round1, round2])
+        fake_client = SimpleNamespace(
+            chat=SimpleNamespace(completions=SimpleNamespace(create=create))
+        )
+        executed: list[str] = []
+
+        async def exec_tool(name: str, raw_args: str) -> str:
+            executed.append(name)
+            return "result"
+
+        with (
+            patch("backend.llm.openrouter._get_async_client", return_value=fake_client),
+            patch(
+                "backend.llm.openrouter.build_system_prompt",
+                new=AsyncMock(return_value=[{"type": "text", "text": "sys"}]),
+            ),
+            patch("backend.llm.openrouter.LLM_PROVIDER", provider),
+        ):
+            async for _ in stream_chat(
+                messages=[{"role": "user", "content": "hi"}],
+                tools=[{"type": "function", "function": {"name": "search_videos"}}],
+                tool_executor=exec_tool,
+                max_tool_calls=3,
+            ):
+                pass
+        return create, executed
+
+    async def test_gemini_executes_tools_on_stop(self) -> None:
+        create, executed = await self._run("gemini")
+        assert executed == ["search_videos", "get_video_transcript"]
+        assert create.call_count == 2
+
+    async def test_gemini_thought_signatures_echoed_back(self) -> None:
+        create, _ = await self._run("gemini")
+        messages = create.call_args_list[1].kwargs["messages"]
+        assistant = next(m for m in messages if m["role"] == "assistant")
+        signatures = [
+            tc["extra_content"]["google"]["thought_signature"] for tc in assistant["tool_calls"]
+        ]
+        assert signatures == ["sig-1", "sig-2"]
+
+    async def test_openrouter_behaviour_unchanged(self) -> None:
+        create, executed = await self._run("openrouter")
+        assert executed == []
+        assert create.call_count == 1
+
+
 class TestGeminiEmbeddings:
     def _fake_client(self) -> MagicMock:
         client = MagicMock()

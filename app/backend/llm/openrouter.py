@@ -344,8 +344,12 @@ async def stream_chat(
                     last_heartbeat_at = time.monotonic()
                 if delta and delta.tool_calls:
                     for tc in delta.tool_calls:
+                        # Gemini sends each tool call whole with index=None;
+                        # give each one its own slot so parallel calls
+                        # don't merge.
+                        index = tc.index if tc.index is not None else len(pending)
                         slot = pending.setdefault(
-                            tc.index,
+                            index,
                             {
                                 "id": "",
                                 "type": "function",
@@ -361,6 +365,12 @@ async def stream_chat(
                                 slot["function"]["name"] = tc.function.name
                             if tc.function.arguments:
                                 slot["function"]["arguments"] += tc.function.arguments
+                        # Gemini 3 attaches a thought signature that must be
+                        # echoed back on the assistant tool_call next round,
+                        # or the request is rejected with a 400.
+                        extra_content = getattr(tc, "extra_content", None)
+                        if extra_content:
+                            slot["extra_content"] = extra_content
                     # Emit a keepalive while the model streams tool_call args.
                     # No content token is arriving during this phase, so
                     # without this the socket can go silent for 30+ seconds
@@ -378,7 +388,13 @@ async def stream_chat(
                 tool_calls_made,
             )
 
-            if finish_reason == "tool_calls" and pending and tool_executor:
+            # Gemini's OpenAI-compatible endpoint reports finish_reason="stop"
+            # even when the round ended in tool calls, so for Gemini the
+            # presence of pending tool calls is what signals another round.
+            wants_tools = finish_reason == "tool_calls" or (
+                LLM_PROVIDER == "gemini" and finish_reason == "stop"
+            )
+            if wants_tools and pending and tool_executor:
                 assistant_text = "".join(assistant_text_parts)
                 ordered = [pending[i] for i in sorted(pending.keys())]
                 full_messages.append(

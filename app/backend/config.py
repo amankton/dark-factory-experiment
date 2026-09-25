@@ -103,14 +103,14 @@ if LLM_PROVIDER == "gemini":
     LLM_API_KEY: str = GEMINI_API_KEY
     LLM_BASE_URL: str = GEMINI_BASE_URL
     EMBEDDING_MODEL: str = "gemini-embedding-001"
-    _DEFAULT_CHAT_MODEL = "gemini-2.5-flash"
+    _DEFAULT_CHAT_MODEL = "gemini-3.8-flash"
 else:
     LLM_API_KEY = OPENROUTER_API_KEY
     LLM_BASE_URL = OPENROUTER_BASE_URL
     EMBEDDING_MODEL = "openai/text-embedding-3-small"
     _DEFAULT_CHAT_MODEL = "anthropic/claude-sonnet-4.6"
 # Chat model id for the selected provider. Defaults to Sonnet 4.6 on OpenRouter
-# (prod) or Gemini 2.5 Flash on Gemini; override per-deploy to canary a model.
+# (prod) or Gemini 3.8 Flash on Gemini; override per-deploy to canary a model.
 CHAT_MODEL: str = os.environ.get("CHAT_MODEL", _DEFAULT_CHAT_MODEL)
 # When the model is a reasoning model (Gemini 3 Flash, OpenAI o-series, etc.)
 # we can disable thinking to maximize tokens/sec on workloads that don't need
