@@ -1,6 +1,6 @@
-"""OpenRouter streaming chat completions wrapper.
+"""Streaming chat completions wrapper (OpenRouter or Gemini, per LLM_PROVIDER).
 
-Streams tokens from anthropic/claude-sonnet-4.6 via OpenRouter, with optional
+Streams tokens from config.CHAT_MODEL via the openai SDK, with optional
 tool-use support (e.g. `get_video_transcript` in backend.rag.tools).
 
 `stream_chat(messages, context, tools=None, tool_executor=None, max_tool_calls=0)`
@@ -25,9 +25,10 @@ from backend.config import (
     CATALOG_ENABLED,
     CATALOG_TIER,
     CHAT_MODEL,
+    LLM_API_KEY,
+    LLM_BASE_URL,
+    LLM_PROVIDER,
     LLM_REASONING_EFFORT,
-    OPENROUTER_API_KEY,
-    OPENROUTER_BASE_URL,
 )
 from backend.db import repository
 from backend.rag import catalog
@@ -40,7 +41,7 @@ _async_client: AsyncOpenAI | None = None
 def _get_async_client() -> AsyncOpenAI:
     global _async_client
     if _async_client is None:
-        _async_client = AsyncOpenAI(api_key=OPENROUTER_API_KEY, base_url=OPENROUTER_BASE_URL)
+        _async_client = AsyncOpenAI(api_key=LLM_API_KEY, base_url=LLM_BASE_URL)
     return _async_client
 
 
@@ -232,9 +233,15 @@ async def stream_chat(
         is_member=is_member,
     )
 
+    system_content: str | list[dict] = system_blocks
+    if LLM_PROVIDER == "gemini":
+        # Gemini's OpenAI-compatible endpoint doesn't understand Anthropic's
+        # cache_control blocks; send the system prompt as plain text.
+        system_content = "\n\n".join(block["text"] for block in system_blocks)
+
     full_messages: list[ChatCompletionMessageParam] = [
         # openai stubs don't model list-content system messages; runtime accepts it.
-        {"role": "system", "content": system_blocks},  # type: ignore[misc,list-item]
+        {"role": "system", "content": system_content},  # type: ignore[misc,list-item]
         *cast(list[ChatCompletionMessageParam], messages),
     ]
     base_kwargs: dict[str, Any] = {
@@ -248,7 +255,11 @@ async def stream_chat(
         # content. Silent ~10%/24h failures in prod traced back to this.
         "max_tokens": 8192,
     }
-    if LLM_REASONING_EFFORT:
+    if LLM_REASONING_EFFORT and LLM_PROVIDER == "gemini":
+        # Gemini's OpenAI-compatible endpoint takes reasoning_effort directly
+        # ("none" | "low" | "medium" | "high" map to thinking budgets).
+        base_kwargs["reasoning_effort"] = LLM_REASONING_EFFORT
+    elif LLM_REASONING_EFFORT:
         # OpenRouter normalises this across providers — for Gemini 3 Flash,
         # "minimal" maps to thinking disabled (~190+ tok/s); for OpenAI o-series
         # it maps to lowest reasoning budget. Anthropic ignores it.
