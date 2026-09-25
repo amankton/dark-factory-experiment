@@ -125,6 +125,9 @@ def embed_batch(texts: list[str]) -> list[list[float]]:
         raise RuntimeError(f"Embeddings batch API request failed: {exc}") from exc
 
     # The API guarantees results in the same order as inputs
-    # but we sort by index just to be safe
-    sorted_data = sorted(response.data, key=lambda d: d.index)
-    return [list(d.embedding) for d in sorted_data]
+    # but we sort by index just to be safe. Gemini omits index (None), in
+    # which case the input order is kept.
+    data = response.data
+    if all(d.index is not None for d in data):
+        data = sorted(data, key=lambda d: d.index)
+    return [list(d.embedding) for d in data]

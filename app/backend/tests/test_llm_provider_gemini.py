@@ -195,6 +195,20 @@ class TestGeminiEmbeddings:
         for call in client.embeddings.create.call_args_list:
             assert call.kwargs["dimensions"] == 1536
 
+    def test_batch_keeps_input_order_when_index_missing(self) -> None:
+        """Gemini's batch response items have index=None."""
+        from backend.rag import embeddings
+
+        client = MagicMock()
+        client.embeddings.create.return_value = SimpleNamespace(
+            data=[
+                SimpleNamespace(index=None, embedding=[1.0]),
+                SimpleNamespace(index=None, embedding=[2.0]),
+            ]
+        )
+        with patch.object(embeddings, "_get_client", return_value=client):
+            assert embeddings.embed_batch(["a", "b"]) == [[1.0], [2.0]]
+
     def test_openrouter_omits_dimensions(self) -> None:
         from backend.rag import embeddings
 
